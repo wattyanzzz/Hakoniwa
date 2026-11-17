@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>箱庭シミュレーション</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f4f1e8;--fg:#222;--card:#fff;--line:#d8d2c0;--sea:#8ec8f0;--accent:#2e7d5b;--accent-fg:#fff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15191c;--fg:#e8e6df;--card:#1f2529;--line:#38414a;--sea:#1d4a6b;--accent:#4cae85;--accent-fg:#0b1a13}}
+:root[data-theme="dark"]{--bg:#15191c;--fg:#e8e6df;--card:#1f2529;--line:#38414a;--sea:#1d4a6b;--accent:#4cae85;--accent-fg:#0b1a13}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*,*:before,*:after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;max-width:480px;margin:0 auto;padding:12px}
+h1{font-size:18px;margin:4px 0 8px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px}
+.stats div{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px;text-align:center;font-size:12px}
+.stats b{display:block;font-size:16px}
+#map{display:grid;grid-template-columns:repeat(10,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.c{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:clamp(14px,5vw,22px);background:var(--sea);cursor:pointer;user-select:none}
+.c.w{background:#b98d5b}.c.p{background:#a8d17a}.c.f{background:#6fae5a}.c.t{background:#e9d9a6}.c.a{background:#d9c24f}.c.i{background:#aeb4ba}
+.tools{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+.tools button{flex:1 1 30%;padding:8px 4px;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:8px;font-size:13px}
+.tools button.on{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+.row{display:flex;gap:6px}
+.row button{flex:1;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);font-size:14px}
+#log{background:var(--card);border:1px solid var(--line);border-radius:8px;margin-top:10px;padding:8px;font-size:13px;line-height:1.6;min-height:5em}
+.hint{font-size:12px;opacity:.7;margin-top:6px}.c.b{background:#c9a0a0}.rvc{display:flex;gap:4px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px;margin-top:6px;font-size:12px}.rvc span{flex:1}.rvc button{padding:6px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font-size:12px}
+</style></head><body>
+<h1>🏝️ 箱庭シミュレーション</h1>
+<div class="stats"><div>ターン<b id="sT"></b></div><div>資金<b id="sM"></b></div><div>食料<b id="sF"></b></div><div>人口<b id="sP"></b></div></div>
+<div id="map"></div>
+<div class="tools" id="tools"></div>
+<div class="row"><button id="wait">様子見（ターンを進める）</button><button id="reset">新しい島</button></div>
+<div id="rv"></div>
+<div id="log"></div>
+<div class="hint">🎯目標：攻撃して全ての島の人口を0にするとクリア！計画を選んで島のマスをタップ → 実行してターンが進みます。農場で食料、住宅で人口、工場と森で資金が増えます。🚀ミサイル基地を建てると他島を攻撃でき、敵のミサイルも迎撃できます。🎁交流で友好度が30以上になると交易収入が入ります。</div>
+<script>
+const N=10,KEY="hakoniwa_solo_v1";
+let S,tool="level";
+const rnd=n=>Math.floor(Math.random()*n);
+const near=(x,y,f)=>[[1,0],[-1,0],[0,1],[0,-1]].some(([a,b])=>{const c=S.g[y+b]&&S.g[y+b][x+a];return c&&f(c)});
+const TOOLS={
+ level:{n:"整地",c:5,ok:c=>c.t==1||c.t==3,do:c=>{c.t=2;c.v=0}},
+ reclaim:{n:"埋め立て",c:100,ok:(c,x,y)=>c.t==0&&near(x,y,d=>d.t>0),do:c=>{c.t=1;c.v=0}},
+ forest:{n:"植林",c:50,ok:c=>c.t==2,do:c=>{c.t=3;c.v=1}},
+ farm:{n:"農場",c:20,ok:c=>c.t==2,do:c=>{c.t=5;c.v=10}},
+ house:{n:"住宅",c:30,ok:c=>c.t==2,do:c=>{c.t=4;c.v=5}},
+ factory:{n:"工場",c:100,ok:c=>c.t==2,do:c=>{c.t=6;c.v=30}},
+ base:{n:"ミサイル基地",c:100,ok:c=>c.t==2,do:c=>{c.t=7;c.v=0}},
+ slay:{n:"怪獣退治",c:150,ok:(c,x,y)=>S.m.some(m=>m.x==x&&m.y==y),do:(c,x,y)=>{S.m=S.m.filter(m=>!(m.x==x&&m.y==y))}}
+};
+function mkRivals(){return [["ヤシ島",40],["サンゴ島",55],["ツバキ島",30],["カモメ島",45],["ヒマワリ島",60],["ホタル島",35]].map(([n,p])=>({n,p,rel:0}))}
+function newGame(){
+ const g=Array.from({length:N},()=>Array.from({length:N},()=>({t:0,v:0})));
+ for(let y=3;y<7;y++)for(let x=3;x<7;x++)g[y][x].t=1;
+ for(let i=0;i<8;i++){const x=2+rnd(6),y=2+rnd(6);g[y][x].t=1}
+ const land=[];g.forEach((r,y)=>r.forEach((c,x)=>{if(c.t){c.t=[1,2,2,3][rnd(4)];if(c.t==3)c.v=3;land.push(c)}}));
+ const pl=land.filter(c=>c.t==2);
+ if(pl.length<2){land[0].t=2;land[1].t=2;pl.push(land[0],land[1])}
+ pl[0].t=4;pl[0].v=5;pl[1].t=5;pl[1].v=10;
+ S={g,turn:1,money:300,food:50,m:[],r:mkRivals(),log:["新しい島が見つかりました。開発を始めましょう！"]};
+ save();
+}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
+function load(){try{const s=localStorage.getItem(KEY);if(s){S=JSON.parse(s);if(!S.r)S.r=mkRivals();else{const R=mkRivals();if(S.r.length<R.length){S.r=S.r.concat(R.slice(S.r.length));S.clear=false}}return true}}catch(e){}return false}
+const cells=()=>S.g.flatMap((r,y)=>r.map((c,x)=>({c,x,y})));
+const pop=()=>cells().reduce((s,o)=>s+(o.c.t==4?o.c.v:0),0);
+function say(t){S.log.unshift("T"+S.turn+"：" +t);S.log=S.log.slice(0,6)}
+function advance(){
+ const all=cells();
+ const farms=all.filter(o=>o.c.t==5).length,facs=all.filter(o=>o.c.t==6).length;
+ const fv=all.reduce((s,o)=>s+(o.c.t==3?o.c.v:0),0);
+ const p=pop();
+ S.food+=farms*8-Math.ceil(p*0.6);
+ if(S.food<0){S.food=0;all.filter(o=>o.c.t==4).forEach(o=>{o.c.v--;if(o.c.v<=0){o.c.t=2;o.c.v=0}});say("食料不足で人口が減りました…")}
+ else all.filter(o=>o.c.t==4).forEach(o=>{if(Math.random()<.6)o.c.v=Math.min(20,o.c.v+1)});
+ all.filter(o=>o.c.t==3).forEach(o=>o.c.v=Math.min(10,o.c.v+1));
+ const inc=Math.floor(p*1.5+facs*25+fv*.5);S.money+=inc;
+ const r=Math.random(),land=all.filter(o=>o.c.t>0);
+ if(r<.04){const f=all.filter(o=>o.c.t==5);f.slice(0,2).forEach(o=>{o.c.t=1;o.c.v=0});if(f.length)say("🌀台風で農場が被害を受けました")}
+ else if(r<.08){const b=all.filter(o=>o.c.t==4||o.c.t==6);b.slice(0,2).forEach(o=>{o.c.v=Math.ceil(o.c.v/2)});if(b.length)say("🌋地震が発生！被害が出ました")}
+ else if(r<.12&&p>=30&&S.m.length<2){const o=land[rnd(land.length)];S.m.push({x:o.x,y:o.y});say("👹怪獣が出現しました！")}
+ S.m.forEach(m=>{
+  const d=[[1,0],[-1,0],[0,1],[0,-1]][rnd(4)],nx=m.x+d[0],ny=m.y+d[1];
+  if(S.g[ny]&&S.g[ny][nx]&&S.g[ny][nx].t>0){m.x=nx;m.y=ny}
+  const c=S.g[m.y][m.x];
+  if(c.t>=3){say("怪獣が暴れて街が荒れ地に…");c.t=1;c.v=0}
+ });
+ if(S.m.length&&Math.random()<.12){S.m.pop();say("怪獣は海へ帰っていきました")}
+ S.r.forEach(v=>{
+ if(v.p>0)v.p=Math.min(100,v.p+(Math.random()<.5?1:0));
+ if(v.p>0&&v.rel>=30){S.money+=30;S.food+=10;say("🤝"+v.n+"との交易で資金+30 食料+10")}
+ if(v.p>0&&v.rel<=-20&&Math.random()<.25){
+  const n=1+rnd(3),b=cells().filter(o=>o.c.t==7).length,h=Math.max(0,n-b),L=cells().filter(o=>o.c.t>0);
+  for(let i=0;i<h&&L.length;i++){const o=L[rnd(L.length)];o.c.t=1;o.c.v=0}
+  say("🚀"+v.n+"がミサイル"+n+"発！"+(h?h+"発着弾":"すべて迎撃"));
+ }
+ if(v.rel<0)v.rel++;
+});
+ say("収入 +"+inc+" 人口 "+(pop()*100)+"人");
+ S.turn++;save();render();
+}
+function act(x,y){if(S.clear)return;
+ const T=TOOLS[tool],c=S.g[y][x];
+ if(!T.ok(c,x,y)){return}
+ if(S.money<T.c){say("資金が足りません");render();return}
+ S.money-=T.c;T.do(c,x,y);say(T.n+"を実行");advance();
+}
+const EM={0:"",1:"",2:"",3:"🌲",4:"🏠",5:"🌾",6:"🏭",7:"🚀"},CL={0:"",1:"w",2:"p",3:"f",4:"t",5:"a",6:"i",7:"b"};
+function render(){
+ const m=document.getElementById("map");m.innerHTML="";
+ S.g.forEach((r,y)=>r.forEach((c,x)=>{
+  const d=document.createElement("div");d.className="c "+CL[c.t];
+  d.textContent=S.m.some(o=>o.x==x&&o.y==y)?"👹":EM[c.t];
+  d.onclick=()=>act(x,y);m.appendChild(d)}));
+ sT.textContent=S.turn;sM.textContent=S.money;sF.textContent=S.food;sP.textContent=pop()*100;
+ log.innerHTML=(S.clear?"<b>🎉 ゲームクリア！</b><br>":"")+S.log.join("<br>");
+ document.getElementById("rv").innerHTML=S.r.map((v,i)=>'<div class="rvc"><span>🏝️'+v.n+' 人口'+v.p*100+' '+(v.p<=0?"壊滅":v.rel>=30?"友好":v.rel<=-20?"敵対":"中立")+'('+v.rel+')</span><button '+(v.p<=0?'disabled ':'')+'onclick="gift('+i+')">🎁交流50</button><button '+(v.p<=0?'disabled ':'')+'onclick="fire('+i+')">🚀攻撃20</button></div>').join("");
+ tools.innerHTML="";
+ Object.entries(TOOLS).forEach(([k,T])=>{const b=document.createElement("button");
+  b.textContent=T.n+" "+T.c;b.className=k==tool?"on":"";b.onclick=()=>{tool=k;render()};tools.appendChild(b)});
+}
+const sT=document.getElementById("sT"),sM=document.getElementById("sM"),sF=document.getElementById("sF"),sP=document.getElementById("sP"),log=document.getElementById("log"),tools=document.getElementById("tools");
+function gift(i){if(S.clear||S.r[i].p<=0)return;if(S.money<50){say("資金が足りません");render();return}S.money-=50;const v=S.r[i];v.rel=Math.min(100,v.rel+20);say("🎁"+v.n+"に贈り物。友好度 "+v.rel);advance()}
+function fire(i){const b=cells().filter(o=>o.c.t==7).length;if(!b){say("ミサイル基地がありません");render();return}if(S.money<20){say("資金が足りません");render();return}if(S.clear||S.r[i].p<=0)return;S.money-=20;const v=S.r[i],d=Math.min(v.p,10+rnd(11));v.p-=d;v.rel=Math.max(-100,v.rel-40);say("🚀"+v.n+"にミサイル命中！人口-"+d*100);if(!v.p)say("💥"+v.n+"の人口が0になりました！");if(S.r.every(x=>x.p<=0)){S.clear=true;S.log.unshift("🎉ゲームクリア！全ての島の人口を0にしました（"+S.turn+"ターン）");save();render();return}advance()}
+document.getElementById("wait").onclick=()=>{if(S.clear)return;say("様子を見ました");advance()};
+document.getElementById("reset").onclick=()=>{newGame();render()};
+if(!load())newGame();
+render();
+</script></body></html>
